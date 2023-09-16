@@ -40,6 +40,7 @@
 #include "server/version.h"
 #include "strings/human_readable.h"
 #include "util/accept_server.h"
+#include "util/cloud/aws/aws.h"
 #include "util/fibers/pool.h"
 #include "util/http/http_client.h"
 #include "util/varz.h"
@@ -329,6 +330,10 @@ string NormalizePaths(std::string_view path) {
 }
 
 bool RunEngine(ProactorPool* pool, AcceptServer* acceptor) {
+  pool->GetNextProactor()->Await([&] {
+    util::cloud::aws::Init();
+  });
+
   uint64_t maxmemory = GetMaxMemoryFlag();
   if (maxmemory > 0 && maxmemory < pool->size() * 256_MB) {
     LOG(ERROR) << "There are " << pool->size() << " threads, so "

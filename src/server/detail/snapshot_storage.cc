@@ -5,6 +5,10 @@
 
 #include <absl/strings/str_replace.h>
 #include <absl/strings/strip.h>
+#include <aws/core/auth/AWSCredentialsProvider.h>
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
+#include <aws/s3/model/PutObjectRequest.h>
 
 #include <regex>
 
@@ -12,6 +16,7 @@
 #include "io/file_util.h"
 #include "server/engine_shard_set.h"
 #include "util/cloud/s3.h"
+#include "util/cloud/aws/s3/write_file.h"
 #include "util/fibers/fiber_file.h"
 
 namespace dfly {
@@ -179,17 +184,71 @@ io::Result<std::pair<io::Sink*, uint8_t>, GenericError> AwsS3SnapshotStorage::Op
   }
   auto [bucket_name, obj_path] = *bucket_path;
 
-  util::cloud::S3Bucket bucket(*aws_, bucket_name);
-  std::error_code ec = bucket.Connect(kBucketConnectMs);
-  if (ec) {
-    return nonstd::make_unexpected(GenericError(ec, "Couldn't connect to S3 bucket"));
-  }
-  auto res = bucket.OpenWriteFile(obj_path);
-  if (!res) {
-    return nonstd::make_unexpected(GenericError(res.error(), "Couldn't open file for writing"));
+  // TODO we need to avoid the S3 client being destructed!
+
+  // TODO(andydunstall) Should we avoid a client per write file... What is
+  // this doing.
+  Aws::S3::S3ClientConfiguration s3_conf{};
+  // Out HTTP client currently only supports HTTP.
+  s3_conf.scheme = Aws::Http::Scheme::HTTP;
+  // HTTP 1.1 is the latest version our HTTP client supports.
+  s3_conf.version = Aws::Http::Version::HTTP_VERSION_1_1;
+
+  // TODO the http client is created in the constructor of the S3 client
+  // but then may be executed from a different proactor thread
+  // whereas we need a http client per proactor thread
+
+  // TODO(andydunstall) For now only support the environment provider.
+  std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
+      Aws::MakeShared<Aws::Auth::EnvironmentAWSCredentialsProvider>("helio");
+  // TODO(andydunstall) Not being destructed, move ownership into write file
+  // with shared ptr
+  Aws::S3::S3Client* s3 = new Aws::S3::S3Client{credentials_provider, Aws::MakeShared<Aws::S3::S3EndpointProvider>("helio"),
+                        s3_conf};
+  
+  // TODO(andydunstall) EC2 metadata lookup not working as we're not in a
+  // proactor - though if we move this setup into a proactor that fails when
+  // it tries to use the HTTP client from another proactor...
+  // Alternatively we could explicitly load from EC2 but then reloading
+  // expired credentials won't work
+
+  // AWS_REGION=us-east-1 AWS_EC2_METADATA_DISABLED=1 ./dragonfly --alsologtostderr --dir s3://dev-andy-dfcloud-backups-us-east-1/new --vmodule=http_client*=99,write_file*=99 --proactor_threads=1
+
+  io::Result<std::unique_ptr<io::WriteFile>> open_res =
+      util::cloud::aws::s3::WriteFile::Open(bucket_name, obj_path, s3);
+  if (!open_res) {
+    return nonstd::make_unexpected(GenericError(open_res.error(), "Couldn't open file for writing"));
   }
 
-  return std::pair<io::Sink*, uint8_t>(*res, FileType::CLOUD);
+  std::unique_ptr<io::WriteFile> file = std::move(*open_res);
+  return std::pair<io::Sink*, uint8_t>(file.release(), FileType::CLOUD);
+
+  // return shard_set->pool()->GetNextProactor()->Await([&]() -> io::Result<std::pair<io::Sink*, uint8_t>, GenericError> {
+  //   Aws::S3::S3ClientConfiguration s3_conf{};
+  //   // Out HTTP client currently only supports HTTP.
+  //   s3_conf.scheme = Aws::Http::Scheme::HTTP;
+  //   // HTTP 1.1 is the latest version our HTTP client supports.
+  //   s3_conf.version = Aws::Http::Version::HTTP_VERSION_1_1;
+
+  //   // TODO the http client is created in the constructor of the S3 client
+  //   // but then may be executed from a different proactor thread
+  //   // whereas we need a http client per proactor thread
+
+  //   // TODO(andydunstall) For now only support the environment provider.
+  //   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
+  //       Aws::MakeShared<Aws::Auth::EnvironmentAWSCredentialsProvider>("helio");
+  //   Aws::S3::S3Client s3{credentials_provider, Aws::MakeShared<Aws::S3::S3EndpointProvider>("helio"),
+  //                         s3_conf};
+
+  //   io::Result<std::unique_ptr<io::WriteFile>> open_res =
+  //       util::cloud::aws::s3::WriteFile::Open(bucket_name, obj_path, &s3);
+  //   if (!open_res) {
+  //     return nonstd::make_unexpected(GenericError(open_res.error(), "Couldn't open file for writing"));
+  //   }
+
+  //   std::unique_ptr<io::WriteFile> file = std::move(*open_res);
+  //   return std::pair<io::Sink*, uint8_t>(file.release(), FileType::CLOUD);
+  // });
 }
 
 io::ReadonlyFileOrError AwsS3SnapshotStorage::OpenReadFile(const std::string& path) {
