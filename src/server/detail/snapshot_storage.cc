@@ -31,8 +31,18 @@ const std::string kTimestampRegex = "([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{
 
 }  // namespace
 
-std::optional<std::pair<std::string, std::string>> GetBucketPath(std::string_view path) {
-  std::string_view clean = absl::StripPrefix(path, kS3Prefix);
+SnapshotType SnapshotTypeFromPath(std::string_view path) {
+  if (absl::StartsWith(path, kAwsS3Prefix)) {
+    return SnapshotType::AWS_S3;
+  } else if (absl::StartsWith(path, kGcpGsPrefix)) {
+    return SnapshotType::GCP_GS;
+  } else {
+    return SnapshotType::LOCAL;
+  }
+}
+
+std::optional<std::pair<std::string, std::string>> GetBucketPath(std::string_view path, std::string_view path_prefix) {
+  std::string_view clean = absl::StripPrefix(path, path_prefix);
 
   size_t pos = clean.find('/');
   if (pos == std::string_view::npos)
@@ -174,14 +184,16 @@ io::Result<std::vector<std::string>, GenericError> FileSnapshotStorage::LoadPath
   return paths;
 }
 
-AwsS3SnapshotStorage::AwsS3SnapshotStorage(const std::string& endpoint) {
+AwsS3SnapshotStorage::AwsS3SnapshotStorage(const std::string& endpoint, const std::string& path_prefix)
+    : path_prefix_{path_prefix} {
   shard_set->pool()->GetNextProactor()->Await([&] {
     // S3ClientConfiguration may request configuration and credentials from
     // EC2 metadata so must be run in a proactor thread.
     Aws::S3::S3ClientConfiguration s3_conf{};
+    // TODO(andydunstall): Disable EC2 metadata when using GCP.
     std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
         std::make_shared<util::aws::CredentialsProviderChain>();
-    // Pass a custom endpoint. If empty uses the S3 endpoint.
+    // Pass a custom endpoint. If empty uses the AWS S3 endpoint.
     std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
         std::make_shared<util::aws::S3EndpointProvider>(endpoint);
     s3_ = std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
@@ -192,7 +204,7 @@ io::Result<std::pair<io::Sink*, uint8_t>, GenericError> AwsS3SnapshotStorage::Op
     const std::string& path) {
   util::fb2::ProactorBase* proactor = shard_set->pool()->GetNextProactor();
   return proactor->Await([&]() -> io::Result<std::pair<io::Sink*, uint8_t>, GenericError> {
-    std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(path);
+    std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(path, path_prefix_);
     if (!bucket_path) {
       return nonstd::make_unexpected(GenericError("Invalid S3 path"));
     }
@@ -208,7 +220,7 @@ io::Result<std::pair<io::Sink*, uint8_t>, GenericError> AwsS3SnapshotStorage::Op
 }
 
 io::ReadonlyFileOrError AwsS3SnapshotStorage::OpenReadFile(const std::string& path) {
-  std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(path);
+  std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(path, path_prefix_);
   if (!bucket_path) {
     return nonstd::make_unexpected(GenericError("Invalid S3 path"));
   }
@@ -221,7 +233,7 @@ io::Result<std::string, GenericError> AwsS3SnapshotStorage::LoadPath(std::string
   if (dbfilename.empty())
     return "";
 
-  std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(dir);
+  std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(dir, path_prefix_);
   if (!bucket_path) {
     return nonstd::make_unexpected(
         GenericError{std::make_error_code(std::errc::invalid_argument), "Invalid S3 path"});
@@ -230,7 +242,7 @@ io::Result<std::string, GenericError> AwsS3SnapshotStorage::LoadPath(std::string
 
   util::fb2::ProactorBase* proactor = shard_set->pool()->GetNextProactor();
   return proactor->Await([&]() -> io::Result<std::string, GenericError> {
-    LOG(INFO) << "Load snapshot: Searching for snapshot in S3 path: " << kS3Prefix << bucket_name
+    LOG(INFO) << "Load snapshot: Searching for snapshot in S3 path: " << path_prefix_ << bucket_name
               << "/" << prefix;
 
     // Create a regex to match the object keys, substituting the timestamp
@@ -255,7 +267,7 @@ io::Result<std::string, GenericError> AwsS3SnapshotStorage::LoadPath(std::string
     for (const std::string& key : *keys) {
       std::smatch m;
       if (std::regex_match(key, m, re)) {
-        return std::string(kS3Prefix) + bucket_name + "/" + key;
+        return std::string(path_prefix_) + bucket_name + "/" + key;
       }
     }
 
@@ -277,7 +289,7 @@ io::Result<std::vector<std::string>, GenericError> AwsS3SnapshotStorage::LoadPat
     return proactor->Await([&]() -> io::Result<std::vector<std::string>, GenericError> {
       std::vector<std::string> paths{{load_path}};
 
-      std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(load_path);
+      std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(load_path, path_prefix_);
       if (!bucket_path) {
         return nonstd::make_unexpected(
             GenericError{std::make_error_code(std::errc::invalid_argument), "Invalid S3 path"});
@@ -298,7 +310,7 @@ io::Result<std::vector<std::string>, GenericError> AwsS3SnapshotStorage::LoadPat
       for (const std::string& key : *keys) {
         std::smatch m;
         if (std::regex_match(key, m, re)) {
-          paths.push_back(std::string(kS3Prefix) + bucket_name + "/" + key);
+          paths.push_back(std::string(path_prefix_) + bucket_name + "/" + key);
         }
       }
 

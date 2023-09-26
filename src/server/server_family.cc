@@ -91,6 +91,8 @@ ABSL_FLAG(ReplicaOfFlag, replicaof, ReplicaOfFlag{},
 
 ABSL_FLAG(string, s3_endpoint, "", "endpoint for s3 snapshots, default uses aws regional endpoint");
 
+ABSL_FLAG(string, gcp_endpoint, "", "endpoint for gcp snapshots, default uses gcp endpoint");
+
 ABSL_DECLARE_FLAG(int32_t, port);
 ABSL_DECLARE_FLAG(bool, cache_mode);
 ABSL_DECLARE_FLAG(uint32_t, hz);
@@ -161,7 +163,6 @@ using strings::HumanReadableNumBytes;
 namespace {
 
 const auto kRedisVersion = "6.2.11";
-constexpr string_view kS3Prefix = "s3://"sv;
 
 using EngineFunc = void (ServerFamily::*)(CmdArgList args, ConnectionContext* cntx);
 
@@ -174,10 +175,6 @@ using CI = CommandId;
 string UnknownCmd(string cmd, CmdArgList args) {
   return absl::StrCat("unknown command '", cmd, "' with args beginning with: ",
                       StrJoin(args.begin(), args.end(), ", ", CmdArgListFormatter()));
-}
-
-bool IsCloudPath(string_view path) {
-  return absl::StartsWith(path, kS3Prefix);
 }
 
 bool IsValidSaveScheduleNibble(string_view time, unsigned int max) {
@@ -419,14 +416,32 @@ void ServerFamily::Init(util::AcceptServer* acceptor, std::vector<facade::Listen
       pb_task_->AwaitBrief([&] { return pb_task_->AddPeriodic(period_ms, cache_cb); });
 
   string flag_dir = GetFlag(FLAGS_dir);
-  if (IsCloudPath(flag_dir)) {
-    shard_set->pool()->GetNextProactor()->Await([&] { util::aws::Init(); });
-    snapshot_storage_ =
-        std::make_shared<detail::AwsS3SnapshotStorage>(absl::GetFlag(FLAGS_s3_endpoint));
-  } else if (fq_threadpool_) {
-    snapshot_storage_ = std::make_shared<detail::FileSnapshotStorage>(fq_threadpool_.get());
-  } else {
-    snapshot_storage_ = std::make_shared<detail::FileSnapshotStorage>(nullptr);
+  detail::SnapshotType snapshot_type = detail::SnapshotTypeFromPath(flag_dir);
+  switch (snapshot_type) {
+    case detail::SnapshotType::AWS_S3:
+      shard_set->pool()->GetNextProactor()->Await([&] { util::aws::Init(); });
+      snapshot_storage_ =
+          std::make_shared<detail::AwsS3SnapshotStorage>(absl::GetFlag(FLAGS_s3_endpoint));
+      break;
+    case detail::SnapshotType::GCP_GS: {
+      shard_set->pool()->GetNextProactor()->Await([&] { util::aws::Init(); });
+
+      // GCP provides an S3 compatible API so we reuse the AWS storage client.
+      std::string endpoint = absl::GetFlag(FLAGS_gcp_endpoint);
+      if (endpoint == "") {
+        endpoint = detail::kGcpGsEndpoint;
+      }
+      snapshot_storage_ =
+          std::make_shared<detail::AwsS3SnapshotStorage>(endpoint, std::string(detail::kGcpGsPrefix));
+      break;
+    }
+    case detail::SnapshotType::LOCAL:
+      if (fq_threadpool_) {
+        snapshot_storage_ = std::make_shared<detail::FileSnapshotStorage>(fq_threadpool_.get());
+      } else {
+        snapshot_storage_ = std::make_shared<detail::FileSnapshotStorage>(nullptr);
+      }
+      break;
   }
 
   // check for '--replicaof' before loading anything

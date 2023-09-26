@@ -32,10 +32,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-bool IsCloudPath(string_view path) {
-  return absl::StartsWith(path, kS3Prefix);
-}
-
 string FormatTs(absl::Time now) {
   return absl::FormatTime("%Y-%m-%dT%H:%M:%S", now, absl::LocalTimeZone());
 }
@@ -66,7 +62,7 @@ void ExtendDfsFilenameWithShard(int shard, string_view extension, fs::path* file
 }  // namespace
 
 GenericError ValidateFilename(const fs::path& filename, bool new_version) {
-  bool is_cloud_path = IsCloudPath(filename.string());
+  bool is_cloud_path = SnapshotTypeFromPath(filename.string()) != SnapshotType::LOCAL;
 
   if (!filename.parent_path().empty() && !is_cloud_path) {
     return {absl::StrCat("filename may not contain directory separators (Got \"", filename.c_str(),
@@ -294,7 +290,8 @@ GenericError SaveStagesController::BuildFullPath() {
 
   SubstituteFilenameTsPlaceholder(&filename, FormatTs(start_time_));
   full_path_ = dir_path / filename;
-  is_cloud_ = IsCloudPath(full_path_.string());
+  is_cloud_ = SnapshotTypeFromPath(full_path_.string()) != SnapshotType::LOCAL;
+
   return {};
 }
 

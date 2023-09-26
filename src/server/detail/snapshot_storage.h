@@ -20,7 +20,18 @@ namespace detail {
 
 namespace fs = std::filesystem;
 
-constexpr std::string_view kS3Prefix = "s3://";
+enum class SnapshotType {
+  LOCAL,
+  AWS_S3,
+  GCP_GS,
+};
+
+SnapshotType SnapshotTypeFromPath(std::string_view path);
+
+constexpr std::string_view kAwsS3Prefix = "s3://";
+constexpr std::string_view kGcpGsPrefix = "gs://";
+
+constexpr std::string_view kGcpGsEndpoint = "storage.googleapis.com";
 
 const size_t kBucketConnectMs = 2000;
 
@@ -72,7 +83,7 @@ class FileSnapshotStorage : public SnapshotStorage {
 
 class AwsS3SnapshotStorage : public SnapshotStorage {
  public:
-  AwsS3SnapshotStorage(const std::string& endpoint);
+  AwsS3SnapshotStorage(const std::string& endpoint, const std::string& path_prefix = std::string(kAwsS3Prefix));
 
   io::Result<std::pair<io::Sink*, uint8_t>, GenericError> OpenWriteFile(
       const std::string& path) override;
@@ -92,10 +103,12 @@ class AwsS3SnapshotStorage : public SnapshotStorage {
                                                                  std::string_view prefix);
 
   std::shared_ptr<Aws::S3::S3Client> s3_;
+
+  std::string path_prefix_;
 };
 
-// Returns bucket_name, obj_path for an s3 path.
-std::optional<std::pair<std::string, std::string>> GetBucketPath(std::string_view path);
+// Returns bucket_name, obj_path for an AWS S3 or GCP GS path.
+std::optional<std::pair<std::string, std::string>> GetBucketPath(std::string_view path, std::string_view path_prefix);
 
 // takes ownership over the file.
 class LinuxWriteWrapper : public io::Sink {
