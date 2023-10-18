@@ -20,11 +20,27 @@ inputs:
     required: false
     type: string
 
+services:
+    postgres:
+      image: postgres:15.4
+      env:
+        POSTGRES_USER: dfcloud
+        POSTGRES_PASSWORD: dfcloud
+      ports:
+        - 5432:5432
+      # Set health checks to wait until postgres has started
+      options: >-
+        --health-cmd pg_isready
+        --health-interval 10s
+        --health-timeout 5s
+        --health-retries 5
+
 runs:
   using: "composite"
   # bring back timeouts once composite actions start supporting them
   # timeout-minutes: 20
-  steps:
+
+    steps:
     - name: Run PyTests
       shell: bash
       run: |

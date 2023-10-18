@@ -25,14 +25,14 @@ jobs:
       - name: Print cpu info
         run: cat /proc/cpuinfo
 
-      - name: Configure & Build
-        run: |
-          cmake -B ${GITHUB_WORKSPACE}/build -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -GNinja \
-                -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      # - name: Configure & Build
+      #   run: |
+      #     cmake -B ${GITHUB_WORKSPACE}/build -DCMAKE_BUILD_TYPE=${{matrix.build-type}} -GNinja \
+      #           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-          cd ${GITHUB_WORKSPACE}/build  && ninja dragonfly
-          pwd
-          ls -l ..
+      #     cd ${GITHUB_WORKSPACE}/build  && ninja dragonfly
+      #     pwd
+      #     ls -l ..
 
       - name: Run regression tests action
         timeout-minutes: 45
