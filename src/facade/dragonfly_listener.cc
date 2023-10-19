@@ -145,10 +145,9 @@ bool ConfigureKeepAlive(int fd) {
 Listener::Listener(Protocol protocol, ServiceInterface* si, Role role)
     : service_(si), protocol_(protocol) {
 #ifdef DFLY_USE_SSL
-  if (GetFlag(FLAGS_tls)) {
-    OPENSSL_init_ssl(OPENSSL_INIT_SSL_DEFAULT, NULL);
-    ctx_ = CreateSslServerCntx();
-  }
+  // Always initialise OpenSSL so we can enable TLS at runtime.
+  OPENSSL_init_ssl(OPENSSL_INIT_SSL_DEFAULT, NULL);
+  ReconfigureTLS();
 #endif
   role_ = role;
   // We only set the HTTP interface for:
@@ -196,6 +195,19 @@ error_code Listener::ConfigureServerSocket(int fd) {
   }
 
   return error_code{};
+}
+
+void Listener::ReconfigureTLS() {
+  SSL_CTX* prev_ctx = ctx_;
+  if (GetFlag(FLAGS_tls)) {
+    ctx_ = CreateSslServerCntx();
+  } else {
+    ctx_ = nullptr;
+  }
+
+  if (prev_ctx) {
+    SSL_CTX_free(prev_ctx);
+  }
 }
 
 void Listener::PreAcceptLoop(util::ProactorBase* pb) {

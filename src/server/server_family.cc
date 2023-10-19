@@ -485,6 +485,18 @@ void ServerFamily::Init(util::AcceptServer* acceptor, std::vector<facade::Listen
     return res.has_value();
   });
 
+  auto tls_conf_cb = [this](const absl::CommandLineFlag& flag) {
+    for (facade::Listener* l : listeners_) {
+      l->ReconfigureTLS();
+    }
+    return true;
+  };
+  config_registry.RegisterMutable("tls", tls_conf_cb);
+  config_registry.RegisterMutable("tls_cert_file", tls_conf_cb);
+  config_registry.RegisterMutable("tls_key_file", tls_conf_cb);
+  config_registry.RegisterMutable("tls_ca_cert_file", tls_conf_cb);
+  config_registry.RegisterMutable("tls_ca_cert_dir", tls_conf_cb);
+
   SetSlowLogThreshold(service_.proactor_pool(), absl::GetFlag(FLAGS_slowlog_log_slower_than));
   config_registry.RegisterMutable("slowlog_log_slower_than",
                                   [this](const absl::CommandLineFlag& flag) {
