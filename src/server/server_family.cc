@@ -1196,33 +1196,36 @@ void ServerFamily::Config(CmdArgList args, ConnectionContext* cntx) {
   string_view sub_cmd = ArgS(args, 0);
 
   if (sub_cmd == "SET") {
-    if (args.size() < 3) {
+    if (args.size() < 3 || args.size() % 2 != 1) {
       return (*cntx)->SendError(WrongNumArgsError("config|set"));
     }
 
-    ToLower(&args[1]);
-    string_view param = ArgS(args, 1);
+    for (size_t indx = 1; indx < args.size(); indx += 2) {
+      ToLower(&args[indx]);
+      string_view param = ArgS(args, indx);
 
-    ConfigRegistry::SetResult result = config_registry.Set(param, ArgS(args, 2));
+      ConfigRegistry::SetResult result = config_registry.Set(param, ArgS(args, indx + 1));
 
-    const char kErrPrefix[] = "CONFIG SET failed (possibly related to argument '";
-    switch (result) {
-      case ConfigRegistry::SetResult::OK:
-        return (*cntx)->SendOk();
-      case ConfigRegistry::SetResult::UNKNOWN:
-        return (*cntx)->SendError(
-            absl::StrCat("Unknown option or number of arguments for CONFIG SET - '", param, "'"),
-            kConfigErrType);
+      const char kErrPrefix[] = "CONFIG SET failed (possibly related to argument '";
+      switch (result) {
+        case ConfigRegistry::SetResult::OK:
+          continue;
+        case ConfigRegistry::SetResult::UNKNOWN:
+          return (*cntx)->SendError(
+              absl::StrCat("Unknown option or number of arguments for CONFIG SET - '", param, "'"),
+              kConfigErrType);
 
-      case ConfigRegistry::SetResult::READONLY:
-        return (*cntx)->SendError(
-            absl::StrCat(kErrPrefix, param, "') - can't set immutable config"), kConfigErrType);
+        case ConfigRegistry::SetResult::READONLY:
+          return (*cntx)->SendError(
+              absl::StrCat(kErrPrefix, param, "') - can't set immutable config"), kConfigErrType);
 
-      case ConfigRegistry::SetResult::INVALID:
-        return (*cntx)->SendError(absl::StrCat(kErrPrefix, param, "') - argument can not be set"),
-                                  kConfigErrType);
+        case ConfigRegistry::SetResult::INVALID:
+          return (*cntx)->SendError(absl::StrCat(kErrPrefix, param, "') - argument can not be set"),
+                                    kConfigErrType);
+      }
+      ABSL_UNREACHABLE();
     }
-    ABSL_UNREACHABLE();
+    return (*cntx)->SendOk();
   }
 
   if (sub_cmd == "GET" && args.size() == 2) {
