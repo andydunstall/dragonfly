@@ -54,6 +54,47 @@ async def test_client_tls_cert(df_factory, with_tls_server_args):
         pass
 
 
+async def test_config_update_tls_certs(
+    df_factory, with_tls_server_args, with_tls_ca_cert_args, tmp_dir
+):
+    # Generate new certificates.
+    ca_key = os.path.join(tmp_dir, "ca-key-new.pem")
+    ca_cert = os.path.join(tmp_dir, "ca-cert-new.pem")
+    gen_ca_cert(ca_key, ca_cert)
+    tls_server_key = os.path.join(tmp_dir, "df-key-new.pem")
+    tls_server_req = os.path.join(tmp_dir, "df-req-new.pem")
+    tls_server_cert = os.path.join(tmp_dir, "df-cert-new.pem")
+    gen_certificate(
+        ca_key,
+        ca_cert,
+        tls_server_req,
+        tls_server_key,
+        tls_server_cert,
+    )
+
+    with df_factory.create(requirepass="XXX", **with_tls_server_args) as server:
+        async with server.client(
+            ssl=True, password="XXX", ssl_ca_certs=with_tls_ca_cert_args["ca_cert"]
+        ) as client:
+            await client.config_set(
+                "tls_key_file", tls_server_key, "tls_cert_file", tls_server_cert
+            )
+
+            # The existing connection should still work.
+            await client.ping()
+
+        # Connecting with the old CA should fail.
+        with pytest.raises(redis.exceptions.ConnectionError):
+            async with server.client(
+                ssl=True, password="XXX", ssl_ca_certs=with_tls_ca_cert_args["ca_cert"]
+            ) as client:
+                await client.ping()
+
+        # Connecting with the new CA should succeed.
+        async with server.client(ssl=True, password="XXX", ssl_ca_certs=ca_cert) as client:
+            await client.ping()
+
+
 async def test_config_enable_tls(
     df_factory, with_ca_tls_server_args, with_tls_client_args, with_tls_ca_cert_args
 ):
