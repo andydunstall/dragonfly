@@ -18,20 +18,20 @@ async def test_tls_no_key(df_factory):
         server.start()
 
 
-async def test_tls_password(df_factory, with_tls_server_args, gen_ca_cert):
+async def test_tls_password(df_factory, with_tls_server_args, with_tls_ca_cert_args):
     with df_factory.create(requirepass="XXX", **with_tls_server_args) as server:
         async with server.client(
-            ssl=True, password="XXX", ssl_ca_certs=gen_ca_cert["ca_cert"]
+            ssl=True, password="XXX", ssl_ca_certs=with_tls_ca_cert_args["ca_cert"]
         ) as client:
             await client.ping()
 
 
 async def test_tls_client_certs(
-    df_factory, with_ca_tls_server_args, with_tls_client_args, gen_ca_cert
+    df_factory, with_ca_tls_server_args, with_tls_client_args, with_tls_ca_cert_args
 ):
     with df_factory.create(**with_ca_tls_server_args) as server:
         async with server.client(
-            **with_tls_client_args, ssl_ca_certs=gen_ca_cert["ca_cert"]
+            **with_tls_client_args, ssl_ca_certs=with_tls_ca_cert_args["ca_cert"]
         ) as client:
             await client.ping()
 
@@ -55,7 +55,7 @@ async def test_client_tls_cert(df_factory, with_tls_server_args):
 
 
 async def test_config_enable_tls(
-    df_factory, with_ca_tls_server_args, with_tls_client_args, gen_ca_cert
+    df_factory, with_ca_tls_server_args, with_tls_client_args, with_tls_ca_cert_args
 ):
     with df_factory.create() as server:
         async with server.client() as client:
@@ -83,17 +83,17 @@ async def test_config_enable_tls(
 
         # Connecting with TLS should succeed.
         async with server.client(
-            **with_tls_client_args, ssl_ca_certs=gen_ca_cert["ca_cert"]
+            **with_tls_client_args, ssl_ca_certs=with_tls_ca_cert_args["ca_cert"]
         ) as client_tls:
             await client_tls.ping()
 
 
 async def test_config_disable_tls(
-    df_factory, with_ca_tls_server_args, with_tls_client_args, gen_ca_cert
+    df_factory, with_ca_tls_server_args, with_tls_client_args, with_tls_ca_cert_args
 ):
     with df_factory.create(**with_ca_tls_server_args) as server:
         async with server.client(
-            **with_tls_client_args, ssl_ca_certs=gen_ca_cert["ca_cert"]
+            **with_tls_client_args, ssl_ca_certs=with_tls_ca_cert_args["ca_cert"]
         ) as client_tls:
             await client_tls.config_set("tls", "false")
 
