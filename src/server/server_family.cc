@@ -446,6 +446,7 @@ ServerFamily::ServerFamily(Service* service) : service_(*service) {
     exit(1);
   }
 
+  // TODO need this
   ValidateServerTlsFlags();
   ValidateClientTlsFlags();
 }
@@ -486,6 +487,7 @@ void ServerFamily::Init(util::AcceptServer* acceptor, std::vector<facade::Listen
   });
 
   auto tls_conf_cb = [this](const absl::CommandLineFlag& flag) {
+    ValidateServerTlsFlags();
     for (facade::Listener* l : listeners_) {
       l->ReconfigureTLS();
     }
