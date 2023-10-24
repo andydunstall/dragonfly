@@ -92,7 +92,13 @@ class AwsS3SnapshotStorage : public SnapshotStorage {
   io::Result<std::vector<std::string>, GenericError> ListObjects(std::string_view bucket_name,
                                                                  std::string_view prefix);
 
-  std::shared_ptr<Aws::S3::S3Client> s3_;
+  std::string endpoint_;
+
+  bool https_;
+
+  bool ec2_metadata_;
+
+  bool sign_payload_;
 };
 
 // Returns bucket_name, obj_path for an s3 path.

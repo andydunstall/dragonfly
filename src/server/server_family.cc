@@ -54,7 +54,6 @@ extern "C" {
 #include "server/version.h"
 #include "strings/human_readable.h"
 #include "util/accept_server.h"
-#include "util/aws/aws.h"
 #include "util/fibers/fiber_file.h"
 
 using namespace std;
@@ -533,7 +532,6 @@ void ServerFamily::Init(util::AcceptServer* acceptor, std::vector<facade::Listen
 
   string flag_dir = GetFlag(FLAGS_dir);
   if (IsCloudPath(flag_dir)) {
-    shard_set->pool()->GetNextProactor()->Await([&] { util::aws::Init(); });
     snapshot_storage_ = std::make_shared<detail::AwsS3SnapshotStorage>(
         absl::GetFlag(FLAGS_s3_endpoint), absl::GetFlag(FLAGS_s3_use_https),
         absl::GetFlag(FLAGS_s3_ec2_metadata), absl::GetFlag(FLAGS_s3_sign_payload));
