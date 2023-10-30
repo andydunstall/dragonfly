@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include <aws/s3/S3Client.h>
-
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -92,7 +90,9 @@ class AwsS3SnapshotStorage : public SnapshotStorage {
   io::Result<std::vector<std::string>, GenericError> ListObjects(std::string_view bucket_name,
                                                                  std::string_view prefix);
 
-  std::shared_ptr<Aws::S3::S3Client> s3_;
+  std::string endpoint_;
+
+  bool https_;
 };
 
 // Returns bucket_name, obj_path for an s3 path.

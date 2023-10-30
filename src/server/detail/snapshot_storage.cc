@@ -5,21 +5,15 @@
 
 #include <absl/strings/str_replace.h>
 #include <absl/strings/strip.h>
-#include <aws/core/auth/AWSCredentialsProvider.h>
-#include <aws/s3/S3Client.h>
-#include <aws/s3/model/ListObjectsV2Request.h>
-#include <aws/s3/model/PutObjectRequest.h>
 
 #include <regex>
 
 #include "base/logging.h"
 #include "io/file_util.h"
 #include "server/engine_shard_set.h"
-#include "util/aws/aws.h"
-#include "util/aws/credentials_provider_chain.h"
-#include "util/aws/s3_endpoint_provider.h"
-#include "util/aws/s3_read_file.h"
-#include "util/aws/s3_write_file.h"
+#include "util/awsv2/s3/client.h"
+#include "util/awsv2/s3/read_file.h"
+#include "util/awsv2/s3/write_file.h"
 #include "util/fibers/fiber_file.h"
 
 namespace dfly {
@@ -176,45 +170,36 @@ io::Result<std::vector<std::string>, GenericError> FileSnapshotStorage::LoadPath
 }
 
 AwsS3SnapshotStorage::AwsS3SnapshotStorage(const std::string& endpoint, bool https,
-                                           bool ec2_metadata, bool sign_payload) {
-  shard_set->pool()->GetNextProactor()->Await([&] {
-    if (!ec2_metadata) {
-      setenv("AWS_EC2_METADATA_DISABLED", "true", 0);
-    }
-    // S3ClientConfiguration may request configuration and credentials from
-    // EC2 metadata so must be run in a proactor thread.
-    Aws::S3::S3ClientConfiguration s3_conf{};
-    LOG(INFO) << "Creating AWS S3 client; region=" << s3_conf.region << "; https=" << std::boolalpha
-              << https << "; endpoint=" << endpoint;
-    if (!sign_payload) {
-      s3_conf.payloadSigningPolicy = Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::ForceNever;
-    }
-    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
-        std::make_shared<util::aws::CredentialsProviderChain>();
-    // Pass a custom endpoint. If empty uses the S3 endpoint.
-    std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
-        std::make_shared<util::aws::S3EndpointProvider>(endpoint, https);
-    s3_ = std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
-  });
+                                           bool ec2_metadata, bool sign_payload)
+    : endpoint_{endpoint}, https_{https} {
+  // TODO(andydunstall): Support config.
 }
 
 io::Result<std::pair<io::Sink*, uint8_t>, GenericError> AwsS3SnapshotStorage::OpenWriteFile(
     const std::string& path) {
-  util::fb2::ProactorBase* proactor = shard_set->pool()->GetNextProactor();
-  return proactor->Await([&]() -> io::Result<std::pair<io::Sink*, uint8_t>, GenericError> {
-    std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(path);
-    if (!bucket_path) {
-      return nonstd::make_unexpected(GenericError("Invalid S3 path"));
-    }
-    auto [bucket, key] = *bucket_path;
-    io::Result<util::aws::S3WriteFile> file = util::aws::S3WriteFile::Open(bucket, key, s3_);
-    if (!file) {
-      return nonstd::make_unexpected(GenericError(file.error(), "Failed to open write file"));
-    }
+  std::optional<std::pair<std::string, std::string>> bucket_path = GetBucketPath(path);
+  if (!bucket_path) {
+    return nonstd::make_unexpected(GenericError("Invalid S3 path"));
+  }
+  auto [bucket, key] = *bucket_path;
 
-    util::aws::S3WriteFile* f = new util::aws::S3WriteFile(std::move(*file));
-    return std::pair<io::Sink*, uint8_t>(f, FileType::CLOUD);
-  });
+  util::awsv2::Config config;
+  config.region = "us-east-1";
+  config.endpoint = endpoint_;
+  config.https = https_;
+
+  std::unique_ptr<util::awsv2::CredentialsProvider> credentials_provider =
+      std::make_unique<util::awsv2::EnvironmentCredentialsProvider>();
+  std::shared_ptr<util::awsv2::s3::Client> client =
+      std::make_shared<util::awsv2::s3::Client>(config, std::move(credentials_provider));
+  util::awsv2::AwsResult<util::awsv2::s3::WriteFile> file =
+      util::awsv2::s3::WriteFile::Open(bucket, key, client);
+  if (!file) {
+    return nonstd::make_unexpected(GenericError{file.error().ToString()});
+  }
+
+  util::awsv2::s3::WriteFile* f = new util::awsv2::s3::WriteFile(std::move(*file));
+  return std::pair<io::Sink*, uint8_t>(f, FileType::CLOUD);
 }
 
 io::ReadonlyFileOrError AwsS3SnapshotStorage::OpenReadFile(const std::string& path) {
@@ -223,7 +208,17 @@ io::ReadonlyFileOrError AwsS3SnapshotStorage::OpenReadFile(const std::string& pa
     return nonstd::make_unexpected(GenericError("Invalid S3 path"));
   }
   auto [bucket, key] = *bucket_path;
-  return new util::aws::S3ReadFile(bucket, key, s3_);
+
+  util::awsv2::Config config;
+  config.region = "us-east-1";
+  config.endpoint = endpoint_;
+  config.https = https_;
+
+  std::unique_ptr<util::awsv2::CredentialsProvider> credentials_provider =
+      std::make_unique<util::awsv2::EnvironmentCredentialsProvider>();
+  std::shared_ptr<util::awsv2::s3::Client> client =
+      std::make_shared<util::awsv2::s3::Client>(config, std::move(credentials_provider));
+  return new util::awsv2::s3::ReadFile(bucket, key, client);
 }
 
 io::Result<std::string, GenericError> AwsS3SnapshotStorage::LoadPath(std::string_view dir,
@@ -327,48 +322,20 @@ io::Result<std::vector<std::string>, GenericError> AwsS3SnapshotStorage::LoadPat
 
 io::Result<std::vector<std::string>, GenericError> AwsS3SnapshotStorage::ListObjects(
     std::string_view bucket_name, std::string_view prefix) {
-  // Each list objects request has a 1000 object limit, so page through the
-  // objects if needed.
-  std::string continuation_token;
-  std::vector<std::string> keys;
-  do {
-    Aws::S3::Model::ListObjectsV2Request request;
-    request.SetBucket(std::string(bucket_name));
-    request.SetPrefix(std::string(prefix));
-    if (!continuation_token.empty()) {
-      request.SetContinuationToken(continuation_token);
-    }
+  util::awsv2::Config config;
+  config.region = "us-east-1";
+  config.endpoint = endpoint_;
+  config.https = https_;
 
-    Aws::S3::Model::ListObjectsV2Outcome outcome = s3_->ListObjectsV2(request);
-    if (outcome.IsSuccess()) {
-      continuation_token = outcome.GetResult().GetNextContinuationToken();
-      for (const auto& object : outcome.GetResult().GetContents()) {
-        keys.push_back(object.GetKey());
-      }
-    } else if (outcome.GetError().GetExceptionName() == "PermanentRedirect") {
-      return nonstd::make_unexpected(
-          GenericError{"Failed list objects in S3 bucket: Permanent redirect; Ensure your "
-                       "configured AWS region matches the S3 bucket region"});
-    } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::NO_SUCH_BUCKET) {
-      return nonstd::make_unexpected(GenericError{
-          "Failed list objects in S3 bucket: Bucket not found: " + std::string(bucket_name)});
-    } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::INVALID_ACCESS_KEY_ID) {
-      return nonstd::make_unexpected(
-          GenericError{"Failed list objects in S3 bucket: Invalid access key ID"});
-    } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::SIGNATURE_DOES_NOT_MATCH) {
-      return nonstd::make_unexpected(
-          GenericError{"Failed list objects in S3 bucket: Invalid signature; Check your AWS "
-                       "credentials are correct"});
-    } else if (outcome.GetError().GetExceptionName() == "InvalidToken") {
-      return nonstd::make_unexpected(
-          GenericError{"Failed list objects in S3 bucket: Invalid token; Check your AWS "
-                       "credentials are correct"});
-    } else {
-      return nonstd::make_unexpected(GenericError{"Failed list objects in S3 bucket: " +
-                                                  outcome.GetError().GetExceptionName()});
-    }
-  } while (!continuation_token.empty());
-  return keys;
+  std::unique_ptr<util::awsv2::CredentialsProvider> credentials_provider =
+      std::make_unique<util::awsv2::EnvironmentCredentialsProvider>();
+  util::awsv2::s3::Client client{config, std::move(credentials_provider)};
+  util::awsv2::AwsResult<std::vector<std::string>> objects =
+      client.ListObjects(bucket_name, prefix);
+  if (!objects) {
+    return nonstd::make_unexpected(GenericError{objects.error().ToString()});
+  }
+  return *objects;
 }
 
 io::Result<size_t> LinuxWriteWrapper::WriteSome(const iovec* v, uint32_t len) {
