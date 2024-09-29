@@ -134,6 +134,9 @@ class RdbLoaderBase {
     // in next loads.
     size_t reserve = 0;
 
+    // Whether the load is only part of an object.
+    bool partial = false;
+
     // Whether to append to the existing object or initialize a new object.
     bool append = false;
   };
