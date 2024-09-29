@@ -134,7 +134,8 @@ class RdbLoaderBase {
     // in next loads.
     size_t reserve = 0;
 
-    // Whether the load is only part of an object.
+    // Whether the load is only part of an object. This is used to ensure the
+    // larger encoding variant is used when loading objects.
     bool partial = false;
 
     // Whether to append to the existing object or initialize a new object.
