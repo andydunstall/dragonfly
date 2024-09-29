@@ -1659,6 +1659,14 @@ auto RdbLoaderBase::ReadZSet(int rdbtype) -> io::Result<OpaqueObj> {
     load_trace->arr[0][i].score = score;
   }
 
+  // If there are still unread elements, cache the number of remaining
+  // elements, or clear if the full object has been read.
+  if (zsetlen > n) {
+    pending_read_.remaining = zsetlen - n;
+  } else if (pending_read_.remaining > 0) {
+    pending_read_.remaining = 0;
+  }
+
   return OpaqueObj{std::move(load_trace), rdbtype};
 }
 
